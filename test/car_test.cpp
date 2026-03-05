@@ -1,6 +1,6 @@
 /**
  * @file car_test.cpp
- * @brief Test program for CAR core library
+ * @brief Test program
  */
 
 #include <iostream>
@@ -60,20 +60,24 @@ void test_shape_manager() {
     sm.clear();
     
     Box b(0, 0, 100, 100);
-    ShapeId bid = sm.add_box(b);
+    ShapeId bid = sm.add(b);
     assert(bid != 0);
-    
-    Circle c(50, 50, 25);
-    ShapeId cid = sm.add_circle(c);
-    assert(cid != 0);
-    
+    assert(sm.get_type(bid) == ShapeType::BOX);
     Box* b2 = sm.get_box(bid);
     assert(b2 != nullptr);
+    assert(sm.valid(bid) == true);
+    
+    Circle c(50, 50, 25);
+    ShapeId cid = sm.add(c);
+    assert(cid != 0);
+    assert(sm.get_type(cid) == ShapeType::CIRCLE);
     Circle* c2 = sm.get_circle(cid);
     assert(c2 != nullptr);
     
-    assert(sm.get_type(bid) == ShapeType::BOX);
-    assert(sm.get_type(cid) == ShapeType::CIRCLE);
+    sm.remove(bid);
+    assert(sm.valid(bid) == false);
+    assert(sm.size() == 1);
+    
     cout << "Shape manager: PASSED" << endl;
 }
 
@@ -134,7 +138,7 @@ void test_database() {
 }
 
 int main() {
-    cout << "=== CAR Core Library Tests ===" << endl << endl;
+    cout << "=== CAR Tests ===" << endl << endl;
     test_basic_types();
     test_string_pool();
     test_reuse_vector();
@@ -142,6 +146,6 @@ int main() {
     test_pcb_objects();
     test_quadtree();
     test_database();
-    cout << endl << "=== All Tests PASSED ===" << endl;
+    cout << endl << "=== All PASSED ===" << endl;
     return 0;
 }
