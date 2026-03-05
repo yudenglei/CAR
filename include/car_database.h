@@ -46,26 +46,6 @@ public:
         return h;
     }
 
-    void update_trace(ObjectId handle, const Trace& new_trace) {
-        transactions.begin("Update trace");
-        auto [old_idx, old_gen] = traces.get_slot_info(handle);
-        Change c(OperationType::REPLACE, ObjectType::TRACE, handle, old_idx, old_gen);
-        const Trace* old_trace = traces.get(handle);
-        if (old_trace) {
-            size_t obj_size = sizeof(Trace) + old_trace->segments.size() * sizeof(LineSegment);
-            if (obj_size > LARGE_OBJECT_THRESHOLD) {
-                c.is_large_object = true;
-                c.snapshot_id = SnapshotCache::get_instance().add_snapshot(Snapshot::create_large(std::make_shared<Trace>(*old_trace)));
-            } else {
-                c.snapshot = Snapshot::create_small(old_trace, sizeof(Trace));
-            }
-        }
-        transactions.record(std::move(c));
-        traces.remove(handle);
-        traces.add(new_trace);
-        transactions.commit();
-    }
-
     void remove_trace(ObjectId handle) {
         transactions.begin("Remove trace");
         auto [idx, gen] = traces.get_slot_info(handle);
@@ -121,6 +101,7 @@ public:
         padstacks.clear(); traces.clear(); vias.clear(); components.clear();
         nets.clear(); layers.clear(); surfaces.clear(); bondwires.clear(); boards.clear();
         strings.clear();
+        shapes.clear();
         if (quadtree) quadtree->clear();
     }
 
