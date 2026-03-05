@@ -1,67 +1,79 @@
 /**
  * @file car_shape.h
- * @brief Shape system - Optimized using ReuseVector
- * @version 20.1
+ * @brief Shape system - KLayout style
+ * @version 20.2
  */
 
 #pragma once
 
-#include <variant>
 #include "car_basic_types.h"
 #include "car_reuse_vector.h"
 
 using ShapeId = uint64_t;
 
-/**
- * @struct ShapeData
- * @brief Unified shape data with type tag - exposed for undo/redo
- */
-struct ShapeData {
-    ShapeType type = ShapeType::NONE;
-    Box box;
-    Circle circle;
-    Polygon polygon;
-    Path path;
-    Arc arc;
-};
+// ShapeId: [type:8][gen:16][idx:32]
+inline ShapeId make_shape_id(ShapeType type, uint32_t idx, uint32_t gen) {
+    return (static_cast<ShapeId>(type) << 48) | (static_cast<ShapeId>(gen) << 32) | idx;
+}
+inline ShapeType extract_type(ShapeId id) { return static_cast<ShapeType>(id >> 48); }
+inline uint32_t extract_idx(ShapeId id) { return static_cast<uint32_t>(id & 0xFFFFFFFFu); }
+inline uint32_t extract_gen(ShapeId id) { return static_cast<uint32_t>((id >> 32) & 0xFFFF); }
 
 class ShapeManager {
 public:
-    static ShapeManager& get_instance() { static ShapeManager instance; return instance; }
+    static ShapeManager& get_instance() { static ShapeManager i; return i; }
 
-    ShapeManager(const ShapeManager&) = delete;
-    ShapeManager& operator=(const ShapeManager&) = delete;
+    ShapeId add(const Box& b) { ObjectId h = m_boxes.add(b); return make_shape_id(ShapeType::BOX, extract_idx(h), extract_gen(h)); }
+    ShapeId add(const Circle& c) { ObjectId h = m_circles.add(c); return make_shape_id(ShapeType::CIRCLE, extract_idx(h), extract_gen(h)); }
+    ShapeId add(const Polygon& p) { ObjectId h = m_polygons.add(p); return make_shape_id(ShapeType::POLYGON, extract_idx(h), extract_gen(h)); }
+    ShapeId add(const Path& p) { ObjectId h = m_paths.add(p); return make_shape_id(ShapeType::PATH, extract_idx(h), extract_gen(h)); }
+    ShapeId add(const Arc& a) { ObjectId h = m_arcs.add(a); return make_shape_id(ShapeType::ARC, extract_idx(h), extract_gen(h)); }
 
-    // Add shapes
-    ShapeId add_box(const Box& b) { ShapeData d; d.type = ShapeType::BOX; d.box = b; return m_shapes.add(std::move(d)); }
-    ShapeId add_circle(const Circle& c) { ShapeData d; d.type = ShapeType::CIRCLE; d.circle = c; return m_shapes.add(std::move(d)); }
-    ShapeId add_polygon(const Polygon& p) { ShapeData d; d.type = ShapeType::POLYGON; d.polygon = p; return m_shapes.add(std::move(d)); }
-    ShapeId add_path(const Path& p) { ShapeData d; d.type = ShapeType::PATH; d.path = p; return m_shapes.add(std::move(d)); }
-    ShapeId add_arc(const Arc& a) { ShapeData d; d.type = ShapeType::ARC; d.arc = a; return m_shapes.add(std::move(d)); }
+    void remove(ShapeId id) {
+        switch (extract_type(id)) {
+            case ShapeType::BOX: m_boxes.remove(id); break;
+            case ShapeType::CIRCLE: m_circles.remove(id); break;
+            case ShapeType::POLYGON: m_polygons.remove(id); break;
+            case ShapeType::PATH: m_paths.remove(id); break;
+            case ShapeType::ARC: m_arcs.remove(id); break;
+            default: break;
+        }
+    }
 
-    void remove(ShapeId id) { m_shapes.remove(id); }
-    ShapeType get_type(ShapeId id) const { const ShapeData* d = m_shapes.get(id); return d ? d->type : ShapeType::NONE; }
-    
-    Box* get_box(ShapeId id) { ShapeData* d = m_shapes.get(id); return (d && d->type == ShapeType::BOX) ? &d->box : nullptr; }
-    Circle* get_circle(ShapeId id) { ShapeData* d = m_shapes.get(id); return (d && d->type == ShapeType::CIRCLE) ? &d->circle : nullptr; }
-    Polygon* get_polygon(ShapeId id) { ShapeData* d = m_shapes.get(id); return (d && d->type == ShapeType::POLYGON) ? &d->polygon : nullptr; }
-    Path* get_path(ShapeId id) { ShapeData* d = m_shapes.get(id); return (d && d->type == ShapeType::PATH) ? &d->path : nullptr; }
-    Arc* get_arc(ShapeId id) { ShapeData* d = m_shapes.get(id); return (d && d->type == ShapeType::ARC) ? &d->arc : nullptr; }
+    Box* get_box(ShapeId id) { return extract_type(id) == ShapeType::BOX ? m_boxes.get(id) : nullptr; }
+    Circle* get_circle(ShapeId id) { return extract_type(id) == ShapeType::CIRCLE ? m_circles.get(id) : nullptr; }
+    Polygon* get_polygon(ShapeId id) { return extract_type(id) == ShapeType::POLYGON ? m_polygons.get(id) : nullptr; }
+    Path* get_path(ShapeId id) { return extract_type(id) == ShapeType::PATH ? m_paths.get(id) : nullptr; }
+    Arc* get_arc(ShapeId id) { return extract_type(id) == ShapeType::ARC ? m_arcs.get(id) : nullptr; }
 
-    // Get full shape data for undo/redo
-    ShapeData* get_data(ShapeId id) { return m_shapes.get(id); }
-    const ShapeData* get_data(ShapeId id) const { return m_shapes.get(id); }
+    ShapeType get_type(ShapeId id) const { return extract_type(id); }
 
-    bool valid(ShapeId id) const { return m_shapes.valid(id); }
-    std::pair<uint32_t, uint32_t> get_slot_info(ShapeId id) const { return m_shapes.get_slot_info(id); }
-    void restore(ShapeId id, const ShapeData& data) { auto [idx, gen] = m_shapes.get_slot_info(id); if (idx != UINT32_MAX) m_shapes.restore(idx, data, gen); }
-    size_t size() const { return m_shapes.size(); }
-    void clear() { m_shapes.clear(); }
+    bool valid(ShapeId id) const {
+        switch (extract_type(id)) {
+            case ShapeType::BOX: return m_boxes.valid(id);
+            case ShapeType::CIRCLE: return m_circles.valid(id);
+            case ShapeType::POLYGON: return m_polygons.valid(id);
+            case ShapeType::PATH: return m_paths.valid(id);
+            case ShapeType::ARC: return m_arcs.valid(id);
+            default: return false;
+        }
+    }
+
+    template<typename T> ReuseVector<T>* get_container();
+    template<> ReuseVector<Box>* get_container<Box>() { return &m_boxes; }
+    template<> ReuseVector<Circle>* get_container<Circle>() { return &m_circles; }
+    template<> ReuseVector<Polygon>* get_container<Polygon>() { return &m_polygons; }
+    template<> ReuseVector<Path>* get_container<Path>() { return &m_paths; }
+    template<> ReuseVector<Arc>* get_container<Arc>() { return &m_arcs; }
+
+    size_t size() const { return m_boxes.size() + m_circles.size() + m_polygons.size() + m_paths.size() + m_arcs.size(); }
+    void clear() { m_boxes.clear(); m_circles.clear(); m_polygons.clear(); m_paths.clear(); m_arcs.clear(); }
 
 private:
     ShapeManager() = default;
-    ReuseVector<ShapeData> m_shapes;
+    ReuseVector<Box> m_boxes;
+    ReuseVector<Circle> m_circles;
+    ReuseVector<Polygon> m_polygons;
+    ReuseVector<Path> m_paths;
+    ReuseVector<Arc> m_arcs;
 };
-
-// Backward compatibility
-template<typename T> using ShapeStore = ReuseVector<T>;
