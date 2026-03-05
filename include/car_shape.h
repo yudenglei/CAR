@@ -12,6 +12,19 @@
 
 using ShapeId = uint64_t;
 
+/**
+ * @struct ShapeData
+ * @brief Unified shape data with type tag - exposed for undo/redo
+ */
+struct ShapeData {
+    ShapeType type = ShapeType::NONE;
+    Box box;
+    Circle circle;
+    Polygon polygon;
+    Path path;
+    Arc arc;
+};
+
 class ShapeManager {
 public:
     static ShapeManager& get_instance() { static ShapeManager instance; return instance; }
@@ -35,6 +48,10 @@ public:
     Path* get_path(ShapeId id) { ShapeData* d = m_shapes.get(id); return (d && d->type == ShapeType::PATH) ? &d->path : nullptr; }
     Arc* get_arc(ShapeId id) { ShapeData* d = m_shapes.get(id); return (d && d->type == ShapeType::ARC) ? &d->arc : nullptr; }
 
+    // Get full shape data for undo/redo
+    ShapeData* get_data(ShapeId id) { return m_shapes.get(id); }
+    const ShapeData* get_data(ShapeId id) const { return m_shapes.get(id); }
+
     bool valid(ShapeId id) const { return m_shapes.valid(id); }
     std::pair<uint32_t, uint32_t> get_slot_info(ShapeId id) const { return m_shapes.get_slot_info(id); }
     void restore(ShapeId id, const ShapeData& data) { auto [idx, gen] = m_shapes.get_slot_info(id); if (idx != UINT32_MAX) m_shapes.restore(idx, data, gen); }
@@ -43,16 +60,6 @@ public:
 
 private:
     ShapeManager() = default;
-
-    struct ShapeData {
-        ShapeType type = ShapeType::NONE;
-        Box box;
-        Circle circle;
-        Polygon polygon;
-        Path path;
-        Arc arc;
-    };
-
     ReuseVector<ShapeData> m_shapes;
 };
 
