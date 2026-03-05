@@ -1,22 +1,30 @@
 /**
  * @file car_database.h
- * @brief Main PCB database
+ * @brief Main PCB database with lightweight containers and undo/redo
  */
 
 #pragma once
 
 #include <memory>
-#include "car_basic_types.h"
-#include "car_string_pool.h"
-#include "car_reuse_vector.h"
-#include "car_shape.h"
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
 #include "car_pcb_objects.h"
-#include "car_transaction.h"
 #include "car_quadtree.h"
+#include "car_reuse_vector.h"
+#include "car_string_pool.h"
+#include "car_transaction.h"
 
 class PCBDatabase {
 public:
-    static PCBDatabase& get_instance() { static PCBDatabase instance; return instance; }
+    static PCBDatabase& get_instance() {
+        static PCBDatabase instance;
+        return instance;
+    }
+
+    StringPool& strings = StringPool::get_instance();
+    ShapeManager& shapes = ShapeManager::get_instance();
 
     ReuseVector<PadstackDef> padstacks;
     ReuseVector<Trace> traces;
@@ -24,71 +32,115 @@ public:
     ReuseVector<Component> components;
     ReuseVector<Net> nets;
     ReuseVector<Layer> layers;
+    ReuseVector<LayerStack> layerstacks;
     ReuseVector<Surface> surfaces;
     ReuseVector<BondWire> bondwires;
+    ReuseVector<Port> ports;
+    ReuseVector<Symbol> symbols;
     ReuseVector<Board> boards;
 
-    TransactionManager transactions;
     LayerIndex layer_index;
+    TransactionManager transactions;
     std::unique_ptr<QuadTree> quadtree;
 
-    StringPool& strings = StringPool::get_instance();
-    ShapeManager& shapes = ShapeManager::get_instance();
+    ObjectId add_trace(LayerId layer, const Trace& trace) {
+        ObjectId handle = traces.add(trace);
+        layer_index.add(layer, handle, LayerIndex::Kind::TRACE);
+        index_name(handle, trace.name_id);
 
-    ObjectId add_trace(LayerId layer, const Trace& t) {
-        transactions.begin("Add trace");
-        ObjectId h = traces.add(t);
-        auto [idx, gen] = traces.get_slot_info(h);
-        Change c(OperationType::REMOVE, ObjectType::TRACE, h, idx, gen);
-        transactions.record(std::move(c));
+        transactions.begin("add_trace");
+        transactions.record({
+            [this, layer, handle]() {
+                if (const auto* t = traces.get(handle)) unindex_name(handle, t->name_id);
+                traces.remove(handle);
+                layer_index.remove(layer, handle, LayerIndex::Kind::TRACE);
+            },
+            [this, trace, layer, handle]() {
+                traces.restore(handle, trace);
+                layer_index.add(layer, handle, LayerIndex::Kind::TRACE);
+                index_name(handle, trace.name_id);
+            },
+        });
         transactions.commit();
-        layer_index.add(layer, h, "Trace");
-        return h;
+
+        return handle;
     }
 
-    void remove_trace(ObjectId handle) {
-        transactions.begin("Remove trace");
-        auto [idx, gen] = traces.get_slot_info(handle);
-        Change c(OperationType::ADD, ObjectType::TRACE, handle, idx, gen);
-        transactions.record(std::move(c));
+    bool replace_trace(ObjectId handle, const Trace& next) {
+        Trace* cur = traces.get(handle);
+        if (!cur) {
+            return false;
+        }
+
+        Trace prev = *cur;
+        unindex_name(handle, prev.name_id);
+        traces.replace(handle, next);
+        index_name(handle, next.name_id);
+
+        transactions.begin("replace_trace");
+        transactions.record({
+            [this, handle, prev]() {
+                if (const auto* t = traces.get(handle)) unindex_name(handle, t->name_id);
+                traces.replace(handle, prev);
+                index_name(handle, prev.name_id);
+            },
+            [this, handle, next]() {
+                if (const auto* t = traces.get(handle)) unindex_name(handle, t->name_id);
+                traces.replace(handle, next);
+                index_name(handle, next.name_id);
+            },
+        });
+        transactions.commit();
+        return true;
+    }
+
+    bool remove_trace(ObjectId handle) {
         Trace* t = traces.get(handle);
-        if (t) layer_index.remove(t->layer_id, handle, "Trace");
+        if (!t) {
+            return false;
+        }
+        Trace snapshot = *t;
+        const LayerId layer = t->layer_id;
+        unindex_name(handle, snapshot.name_id);
         traces.remove(handle);
+        layer_index.remove(layer, handle, LayerIndex::Kind::TRACE);
+
+        transactions.begin("remove_trace");
+        transactions.record({
+            [this, handle, snapshot, layer]() {
+                traces.restore(handle, snapshot);
+                layer_index.add(layer, handle, LayerIndex::Kind::TRACE);
+                index_name(handle, snapshot.name_id);
+            },
+            [this, handle, layer, snapshot]() {
+                if (const auto* cur = traces.get(handle)) unindex_name(handle, cur->name_id);
+                traces.remove(handle);
+                layer_index.remove(layer, handle, LayerIndex::Kind::TRACE);
+            },
+        });
         transactions.commit();
+        return true;
     }
 
-    ObjectId add_via(const Via& v) {
-        transactions.begin("Add via");
-        ObjectId h = vias.add(v);
-        auto [idx, gen] = vias.get_slot_info(h);
-        Change c(OperationType::REMOVE, ObjectType::VIA, h, idx, gen);
-        transactions.record(std::move(c));
-        transactions.commit();
-        layer_index.add(v.start_layer, h, "Via");
-        return h;
+    ObjectId add_via(const Via& via) {
+        ObjectId handle = vias.add(via);
+        layer_index.add(via.start_layer, handle, LayerIndex::Kind::VIA);
+        index_name(handle, via.name_id);
+        return handle;
     }
 
-    ObjectId add_component(const Component& c) {
-        transactions.begin("Add component");
-        ObjectId h = components.add(c);
-        auto [idx, gen] = components.get_slot_info(h);
-        Change c2(OperationType::REMOVE, ObjectType::COMPONENT, h, idx, gen);
-        transactions.record(std::move(c2));
-        transactions.commit();
-        return h;
-    }
+    ObjectId add_layer(const Layer& layer) { return layers.add(layer); }
 
-    ObjectId add_net(const Net& n) {
-        transactions.begin("Add net");
-        ObjectId h = nets.add(n);
-        auto [idx, gen] = nets.get_slot_info(h);
-        Change c(OperationType::REMOVE, ObjectType::NET, h, idx, gen);
-        transactions.record(std::move(c));
-        transactions.commit();
-        return h;
+    std::vector<ObjectId> find_by_name_prefix(std::string_view prefix) const {
+        std::vector<ObjectId> out;
+        for (const auto& [id, sid] : m_name_by_object) {
+            std::string_view s = strings.get(sid);
+            if (!prefix.empty() && s.substr(0, prefix.size()) == prefix) {
+                out.push_back(id);
+            }
+        }
+        return out;
     }
-
-    ObjectId add_layer(const Layer& l) { return layers.add(l); }
 
     bool undo() { return transactions.undo(); }
     bool redo() { return transactions.redo(); }
@@ -98,15 +150,35 @@ public:
     void init_quadtree(const BBox& bounds) { quadtree = std::make_unique<QuadTree>(bounds, 0); }
 
     void clear() {
-        padstacks.clear(); traces.clear(); vias.clear(); components.clear();
-        nets.clear(); layers.clear(); surfaces.clear(); bondwires.clear(); boards.clear();
+        padstacks.clear();
+        traces.clear();
+        vias.clear();
+        components.clear();
+        nets.clear();
+        layers.clear();
+        layerstacks.clear();
+        surfaces.clear();
+        bondwires.clear();
+        ports.clear();
+        symbols.clear();
+        boards.clear();
+
+        m_name_by_object.clear();
         strings.clear();
         shapes.clear();
-        if (quadtree) quadtree->clear();
+        if (quadtree) {
+            quadtree->clear();
+        }
     }
 
 private:
-    PCBDatabase() { transactions.set_database(this); }
-    PCBDatabase(const PCBDatabase&) = delete;
-    PCBDatabase& operator=(const PCBDatabase&) = delete;
+    PCBDatabase() = default;
+
+    void index_name(ObjectId id, StringId sid) { if (sid != 0) m_name_by_object[id] = sid; }
+    void unindex_name(ObjectId id, StringId sid) {
+        auto it = m_name_by_object.find(id);
+        if (it != m_name_by_object.end() && (sid == 0 || it->second == sid)) m_name_by_object.erase(it);
+    }
+
+    std::unordered_map<ObjectId, StringId> m_name_by_object;
 };

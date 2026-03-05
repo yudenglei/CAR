@@ -1,0 +1,38 @@
+# CAR 架构梳理、优化方案与待办
+
+## 1) 当前版本核心优化
+
+- 统一了基础类型、句柄与几何类型，去掉重复定义和冲突。
+- 修复了 `ReuseVector` 的可复用槽位、代数（generation）校验和 `replace`/`restore` 能力。
+- 重写了事务系统：基于命令对象（undo/redo lambda）实现，支持 add/remove/replace 的轻量操作。
+- 修复并增强了四叉树分裂逻辑（避免重复插入/丢失对象）。
+- 扩充了 PCB 对象：`LayerStack/Port/Symbol/Parameter`，并保留 `PadstackDef/Trace/Via/Component/Net/Surface/Board`。
+- 在数据库中增加了名称索引（字符串池 + 前缀搜索），示例支持 `find_by_name_prefix`。
+
+## 2) 关于 MiniMax 对比说明
+
+本环境无法访问 GitHub 外网资源（HTTP 403），因此未能直接拉取并逐个对比 `MiniMax` 仓库中
+`CAEFrame-XXX-vXXX.md` 版本文档。建议下一步将该仓库镜像到本地或提供压缩包后，我可以继续完成：
+
+1. 按文件名与版本号构建演进图谱。
+2. 识别「增量文档」与「替代文档」。
+3. 对每个模块形成最终合并策略与冲突解法。
+4. 输出最终统一版 `CAEFrame` 总体架构文档。
+
+## 3) 后续待办（高优先级）
+
+- [ ] 加入参数表达式系统（ParamTable + 依赖图 + 增量求值缓存）。
+- [ ] 引入 Cap'n Proto schema（board/net/trace/via/component 等）及版本迁移策略。
+- [ ] 增加对象关系图索引（net->pins/vias/traces 的反向索引自动维护）。
+- [ ] 完成跨层对象管理策略（padstack/bondwire 的 layer-span 索引 + 查询过滤器）。
+- [ ] 为 2D/3D 视图设计共享只读快照层（避免渲染线程锁争用）。
+- [ ] 增加基准测试（百万 trace/via 场景内存与吞吐量）。
+
+## 4) 推荐结构（下一阶段）
+
+- `core/`: 基础类型、句柄、内存池、字符串池
+- `db/`: ReuseVector 容器、关系索引、事务
+- `pcb/`: 业务对象与拓扑关系
+- `io/`: capnp schema + load/save + 版本迁移
+- `view2d/`, `view3d/`: 视图模型与渲染桥接
+- `algo/`: DRC、连通性、路径分析

@@ -1,23 +1,19 @@
 /**
  * @file car_string_pool.h
- * @brief String pool with transparent hashing
- * @version 20.0
+ * @brief String interning pool
  */
 
 #pragma once
 
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <shared_mutex>
 #include <vector>
 
 using StringId = uint32_t;
 
-/**
- * @class StringPool
- * @brief String interning pool with transparent hashing
- */
 class StringPool {
 public:
     static StringPool& get_instance() {
@@ -28,28 +24,36 @@ public:
     StringPool(const StringPool&) = delete;
     StringPool& operator=(const StringPool&) = delete;
 
-    StringId intern(std::string_view s) {
-        if (s.empty()) return 0;
+    StringId intern(std::string_view sv) {
+        if (sv.empty()) {
+            return 0;
+        }
+
         {
             std::shared_lock lock(m_mutex);
-            auto it = m_map.find(s);
-            if (it != m_map.end()) return it->second;
+            auto it = m_map.find(std::string(sv));
+            if (it != m_map.end()) {
+                return it->second;
+            }
         }
+
         std::unique_lock lock(m_mutex);
-        auto it = m_map.find(s);
-        if (it != m_map.end()) return it->second;
+        auto key = std::string(sv);
+        auto it = m_map.find(key);
+        if (it != m_map.end()) {
+            return it->second;
+        }
+
         StringId id = static_cast<StringId>(m_strings.size());
-        m_strings.emplace_back(s);
+        m_strings.emplace_back(std::move(key));
         m_map[m_strings.back()] = id;
         return id;
     }
 
-    StringId intern(const std::string& s) {
-        return intern(std::string_view(s));
-    }
-
     std::string_view get(StringId id) const {
-        if (id == 0 || id >= m_strings.size()) return "";
+        if (id == 0 || id >= m_strings.size()) {
+            return "";
+        }
         return m_strings[id];
     }
 
@@ -60,23 +64,10 @@ public:
         m_strings.emplace_back("");
     }
 
-    size_t size() const { return m_strings.size(); }
-
 private:
     StringPool() { m_strings.emplace_back(""); }
+
     mutable std::shared_mutex m_mutex;
     std::vector<std::string> m_strings;
     std::unordered_map<std::string, StringId> m_map;
 };
-
-inline StringId intern_string(const char* s) {
-    return StringPool::get_instance().intern(s);
-}
-
-inline StringId intern_string(const std::string& s) {
-    return StringPool::get_instance().intern(s);
-}
-
-inline std::string_view get_string(StringId id) {
-    return StringPool::get_instance().get(id);
-}
