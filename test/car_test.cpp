@@ -83,6 +83,33 @@ void test_database_transaction_and_search() {
     assert(db.traces.get(id) != nullptr);
 }
 
+
+void test_database_via_generic_ops() {
+    PCBDatabase& db = PCBDatabase::get_instance();
+    db.clear();
+
+    Via v{};
+    v.name_id = db.strings.intern("VIA_CLK");
+    v.start_layer = 1;
+    v.end_layer = 8;
+
+    ObjectId via_id = db.add_via(v);
+    assert(db.vias.get(via_id) != nullptr);
+
+    Via v2 = v;
+    v2.name_id = db.strings.intern("VIA_CLK_NEW");
+    v2.start_layer = 2;
+    assert(db.replace_via(via_id, v2));
+
+    auto matches = db.find_by_name_prefix("VIA_");
+    assert(!matches.empty());
+
+    assert(db.remove_via(via_id));
+    assert(db.vias.get(via_id) == nullptr);
+    assert(db.undo());
+    assert(db.vias.get(via_id) != nullptr);
+}
+
 int main() {
     cout << "Running CAR tests..." << endl;
     test_string_pool();
@@ -90,6 +117,7 @@ int main() {
     test_shape_manager();
     test_quadtree();
     test_database_transaction_and_search();
+    test_database_via_generic_ops();
     cout << "All tests passed." << endl;
     return 0;
 }

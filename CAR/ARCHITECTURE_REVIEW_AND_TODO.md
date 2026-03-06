@@ -36,3 +36,23 @@
 - `io/`: capnp schema + load/save + 版本迁移
 - `view2d/`, `view3d/`: 视图模型与渲染桥接
 - `algo/`: DRC、连通性、路径分析
+
+## 5) 开发者示例：模板化 insert/replace/erase
+
+```cpp
+// insert 示例
+ObjectId trace_id = db.add_trace(1, trace);
+
+// replace 示例（不需要单独写事务模板代码）
+Trace t2 = trace;
+t2.name_id = db.strings.intern("CLK_NEW");
+db.replace_trace(trace_id, t2);
+
+// erase 示例（同样自动进入 undo/redo 栈）
+db.remove_trace(trace_id);
+```
+
+说明：
+- `PCBDatabase::insert_entity/replace_entity/erase_entity` 是通用模板核心。
+- 业务层只需要传入容器 + 对象 + apply/revert 回调（例如 layer_index 和 name_index 的更新）。
+- 新增 shape 或器件类型时，无需重复实现一整套 undo/redo 逻辑。
