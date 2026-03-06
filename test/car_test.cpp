@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "car_database.h"
+#include "car_transaction.h"
 
 using namespace std;
 
@@ -140,6 +141,22 @@ void test_database_batch_transaction() {
     assert(db.vias.get(vid) != nullptr);
 }
 
+
+void test_transaction_manager_log_only() {
+    TransactionManager tm;
+    tm.begin("tx1");
+    tm.record(TxOp{TxOpType::INSERT, 1, 100, 0xFFFFFFFFu, 0});
+    tm.record(TxOp{TxOpType::ERASE, 2, 200, 1, 0xFFFFFFFFu});
+    tm.commit();
+
+    assert(tm.can_undo());
+    TxRecord tx;
+    assert(tm.pop_undo(tx));
+    assert(tx.ops.size() == 2);
+    tm.push_redo(std::move(tx));
+    assert(tm.can_redo());
+}
+
 int main() {
     cout << "Running CAR tests..." << endl;
     test_string_pool();
@@ -149,6 +166,7 @@ int main() {
     test_database_transaction_and_search();
     test_database_via_generic_ops();
     test_database_batch_transaction();
+    test_transaction_manager_log_only();
     cout << "All tests passed." << endl;
     return 0;
 }
