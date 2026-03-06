@@ -90,19 +90,14 @@ db.erase<PCBDatabase::EntityKind::TRACE>(trace_id);
   - `Transaction` 内按类型分桶存储 `m_ops<T>`，并用 `order` 记录跨类型执行顺序。
 - 不使用 `std::function`。
 - 不使用 `variant AnyOp/ObjectData`。
-- `LayerOp<T>` 直接携带对象数组；不再有 before/after 字段。
+- `before_idx/after_idx` 仅是归档数组下标（用于 erase/replace 可逆恢复），不是对象快照树。
 - 支持 `begin/commit` 批量记录（一次事务多条 layer_op）。
 
 
-## 10) 对齐 KLayout layer_op：一个 op 内是对象数组
+## 9) 归档下标的作用（为什么需要 archive）
 
-- 现在每个 `LayerOp<T>` 直接持有：
-  - `vector<ObjectId> handles`
-  - `vector<T> objects`
-- 单对象操作时数组长度为 1；批量操作时可放多个对象。
-- `replace` 不再记 `before/after` 字段，而是拆成两条 op：
-  - `ERASE(old)`
-  - `INSERT(new)`
-- 这也是为什么 KLayout 的 `layer_op` 通常只需一个对象向量：
-  - 操作本身是“插入”或“删除”；
-  - 可逆性由反向执行同一批对象实现（insert 的逆是 erase，erase 的逆是 insert）。
+- `LayerOp` 只记录轻量字段（op/kind/handle/index），不直接内嵌大对象。
+- `before_idx` / `after_idx` 指向按类型存放的归档数组：
+  - `erase` 回滚时要恢复旧对象，需要 `before_idx`；
+  - `replace` 前进/回滚都需要 old/new，对应 `before_idx/after_idx`。
+- 这比在 op 中直接放对象更轻；同时比全局 snapshot 更细粒度。
