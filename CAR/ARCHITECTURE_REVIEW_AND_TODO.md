@@ -81,3 +81,14 @@ db.erase<PCBDatabase::EntityKind::TRACE>(trace_id);
   - 降低事务记录对象的动态分发负担（无 `std::function`）；
   - 保持可恢复性（erase/replace 仍可找回旧对象）；
   - API 维持统一模板：`insert<Kind>/replace<Kind>/erase<Kind>`。
+
+
+## 8) 最终版本（V2+V3 融合）
+
+- 事务记录采用 `dbshapes::layer_op` 风格的**模板化 typed-op**：
+  - `LayerOp<K>{op, handle, before_idx, after_idx}`
+  - `Transaction` 内按类型分桶存储 `m_ops<T>`，并用 `order` 记录跨类型执行顺序。
+- 不使用 `std::function`。
+- 不使用 `variant AnyOp/ObjectData`。
+- `before_idx/after_idx` 仅是归档数组下标（用于 erase/replace 可逆恢复），不是对象快照树。
+- 支持 `begin/commit` 批量记录（一次事务多条 layer_op）。

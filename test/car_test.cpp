@@ -110,6 +110,36 @@ void test_database_via_generic_ops() {
     assert(db.vias.get(via_id) != nullptr);
 }
 
+
+void test_database_batch_transaction() {
+    PCBDatabase& db = PCBDatabase::get_instance();
+    db.clear();
+
+    Trace t{};
+    t.name_id = db.strings.intern("BATCH_T");
+    t.layer_id = 1;
+
+    Via v{};
+    v.name_id = db.strings.intern("BATCH_V");
+    v.start_layer = 1;
+    v.end_layer = 2;
+
+    db.begin("batch_insert");
+    ObjectId tid = db.insert<PCBDatabase::EntityKind::TRACE>(t);
+    ObjectId vid = db.insert<PCBDatabase::EntityKind::VIA>(v);
+    db.commit();
+
+    assert(db.traces.get(tid) != nullptr);
+    assert(db.vias.get(vid) != nullptr);
+
+    assert(db.undo());
+    assert(db.traces.get(tid) == nullptr);
+    assert(db.vias.get(vid) == nullptr);
+    assert(db.redo());
+    assert(db.traces.get(tid) != nullptr);
+    assert(db.vias.get(vid) != nullptr);
+}
+
 int main() {
     cout << "Running CAR tests..." << endl;
     test_string_pool();
@@ -118,6 +148,7 @@ int main() {
     test_quadtree();
     test_database_transaction_and_search();
     test_database_via_generic_ops();
+    test_database_batch_transaction();
     cout << "All tests passed." << endl;
     return 0;
 }
