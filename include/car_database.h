@@ -1,11 +1,10 @@
 /**
  * @file car_database.h
- * @brief Main PCB database with KLayout-style layer-op transaction log
+ * @brief Main PCB database with KLayout-style typed layer-op transaction log
  */
 
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -26,22 +25,7 @@ public:
         PADSTACK, TRACE, VIA, COMPONENT, NET, LAYER, LAYERSTACK, SURFACE, BONDWIRE, PORT, SYMBOL, BOARD,
     };
 
-    enum class OpType : uint8_t { INSERT, ERASE, REPLACE };
-    static constexpr uint32_t INVALID_ARCHIVE_INDEX = 0xFFFFFFFFu;
-
-    struct LayerOp {
-        OpType op = OpType::INSERT;
-        EntityKind kind = EntityKind::TRACE;
-        ObjectId handle = 0;
-        uint32_t before_idx = INVALID_ARCHIVE_INDEX;
-        uint32_t after_idx = INVALID_ARCHIVE_INDEX;
-    };
-
-    struct Transaction {
-        std::string desc;
-        std::vector<LayerOp> ops;
-        bool empty() const { return ops.empty(); }
-    };
+    enum class OpType : uint8_t { INSERT, ERASE };
 
     template <EntityKind K>
     using EntityT = std::conditional_t<K == EntityKind::PADSTACK, PadstackDef,
@@ -55,6 +39,37 @@ public:
         std::conditional_t<K == EntityKind::BONDWIRE, BondWire,
         std::conditional_t<K == EntityKind::PORT, Port,
         std::conditional_t<K == EntityKind::SYMBOL, Symbol, Board>>>>>>>>>>>;
+
+    template <EntityKind K>
+    struct LayerOp {
+        OpType op = OpType::INSERT;
+        std::vector<ObjectId> handles;
+        std::vector<EntityT<K>> objects;
+    };
+
+    struct OpOrder {
+        EntityKind kind = EntityKind::TRACE;
+        uint32_t index = 0;
+    };
+
+    struct Transaction {
+        std::string desc;
+        std::vector<OpOrder> order;
+        std::vector<LayerOp<EntityKind::PADSTACK>> padstack_ops;
+        std::vector<LayerOp<EntityKind::TRACE>> trace_ops;
+        std::vector<LayerOp<EntityKind::VIA>> via_ops;
+        std::vector<LayerOp<EntityKind::COMPONENT>> component_ops;
+        std::vector<LayerOp<EntityKind::NET>> net_ops;
+        std::vector<LayerOp<EntityKind::LAYER>> layer_ops;
+        std::vector<LayerOp<EntityKind::LAYERSTACK>> layerstack_ops;
+        std::vector<LayerOp<EntityKind::SURFACE>> surface_ops;
+        std::vector<LayerOp<EntityKind::BONDWIRE>> bondwire_ops;
+        std::vector<LayerOp<EntityKind::PORT>> port_ops;
+        std::vector<LayerOp<EntityKind::SYMBOL>> symbol_ops;
+        std::vector<LayerOp<EntityKind::BOARD>> board_ops;
+
+        bool empty() const { return order.empty(); }
+    };
 
     template <typename T>
     struct KindOf;
@@ -106,7 +121,6 @@ public:
         m_in_tx = false;
     }
 
-    // Deduced API (preferred): no explicit EntityKind needed for insert/replace
     template <typename T>
     ObjectId insert(const T& obj, const std::string& desc = "insert") {
         return insert_k<KindOf<std::decay_t<T>>::value>(obj, desc);
@@ -117,7 +131,6 @@ public:
         return replace_k<KindOf<std::decay_t<T>>::value>(handle, next, desc);
     }
 
-    // Erase cannot infer type from handle alone, so provide kind-based call
     bool erase(ObjectId handle, EntityKind kind, const std::string& desc = "erase") {
         switch (kind) {
             case EntityKind::PADSTACK: return erase_k<EntityKind::PADSTACK>(handle, desc);
@@ -136,41 +149,17 @@ public:
         return false;
     }
 
-    // Explicit-kind API retained for direct control
     template <EntityKind K>
     ObjectId insert_k(const EntityT<K>& obj, const std::string& desc = "insert") {
-        auto& c = container<K>();
-        ObjectId handle = c.add(obj);
+        ObjectId handle = container<K>().add(obj);
         on_insert<K>(handle, obj);
 
-        LayerOp op{};
+        LayerOp<K> op{};
         op.op = OpType::INSERT;
-        op.kind = K;
-        op.handle = handle;
-        op.after_idx = archive_add<K>(obj);
-        record_op(desc, op);
+        op.handles.push_back(handle);
+        op.objects.push_back(obj);
+        record_op<K>(desc, std::move(op));
         return handle;
-    }
-
-    template <EntityKind K>
-    bool replace_k(ObjectId handle, const EntityT<K>& next, const std::string& desc = "replace") {
-        auto& c = container<K>();
-        const EntityT<K>* cur = c.get(handle);
-        if (!cur) return false;
-
-        const EntityT<K> prev = *cur;
-        on_erase<K>(handle, prev);
-        c.replace(handle, next);
-        on_insert<K>(handle, next);
-
-        LayerOp op{};
-        op.op = OpType::REPLACE;
-        op.kind = K;
-        op.handle = handle;
-        op.before_idx = archive_add<K>(prev);
-        op.after_idx = archive_add<K>(next);
-        record_op(desc, op);
-        return true;
     }
 
     template <EntityKind K>
@@ -179,16 +168,56 @@ public:
         const EntityT<K>* cur = c.get(handle);
         if (!cur) return false;
 
-        const EntityT<K> prev = *cur;
-        on_erase<K>(handle, prev);
+        EntityT<K> obj = *cur;
+        on_erase<K>(handle, obj);
         c.remove(handle);
 
-        LayerOp op{};
+        LayerOp<K> op{};
         op.op = OpType::ERASE;
-        op.kind = K;
-        op.handle = handle;
-        op.before_idx = archive_add<K>(prev);
-        record_op(desc, op);
+        op.handles.push_back(handle);
+        op.objects.push_back(std::move(obj));
+        record_op<K>(desc, std::move(op));
+        return true;
+    }
+
+    template <EntityKind K>
+    bool replace_k(ObjectId handle, const EntityT<K>& next, const std::string& desc = "replace") {
+        auto& c = container<K>();
+        const EntityT<K>* cur = c.get(handle);
+        if (!cur) return false;
+
+        EntityT<K> old_obj = *cur;
+
+        // apply current state directly
+        on_erase<K>(handle, old_obj);
+        c.replace(handle, next);
+        on_insert<K>(handle, next);
+
+        // log as erase(old) + insert(new), no before/after record in one op
+        LayerOp<K> erase_op{};
+        erase_op.op = OpType::ERASE;
+        erase_op.handles.push_back(handle);
+        erase_op.objects.push_back(std::move(old_obj));
+
+        LayerOp<K> insert_op{};
+        insert_op.op = OpType::INSERT;
+        insert_op.handles.push_back(handle);
+        insert_op.objects.push_back(next);
+
+        if (m_replaying) return true;
+        if (m_in_tx) {
+            append_op_to_tx<K>(m_open_tx, std::move(erase_op));
+            append_op_to_tx<K>(m_open_tx, std::move(insert_op));
+            return true;
+        }
+
+        Transaction tx{};
+        tx.desc = desc;
+        append_op_to_tx<K>(tx, std::move(erase_op));
+        append_op_to_tx<K>(tx, std::move(insert_op));
+        m_undo.push_back(std::move(tx));
+        if (m_undo.size() > MAX_UNDO) m_undo.erase(m_undo.begin());
+        m_redo.clear();
         return true;
     }
 
@@ -198,7 +227,7 @@ public:
         m_undo.pop_back();
 
         m_replaying = true;
-        for (auto it = tx.ops.rbegin(); it != tx.ops.rend(); ++it) {
+        for (auto it = tx.order.rbegin(); it != tx.order.rend(); ++it) {
             apply_inverse_ordered(tx, *it);
         }
         m_replaying = false;
@@ -213,8 +242,8 @@ public:
         m_redo.pop_back();
 
         m_replaying = true;
-        for (const auto& op : tx.ops) {
-            apply_forward_ordered(tx, op);
+        for (const auto& ord : tx.order) {
+            apply_forward_ordered(tx, ord);
         }
         m_replaying = false;
 
@@ -229,9 +258,7 @@ public:
         std::vector<ObjectId> out;
         for (const auto& [id, sid] : m_name_by_object) {
             std::string_view s = strings.get(sid);
-            if (!prefix.empty() && s.substr(0, prefix.size()) == prefix) {
-                out.push_back(id);
-            }
+            if (!prefix.empty() && s.substr(0, prefix.size()) == prefix) out.push_back(id);
         }
         return out;
     }
@@ -241,9 +268,6 @@ public:
     void clear() {
         padstacks.clear(); traces.clear(); vias.clear(); components.clear(); nets.clear(); layers.clear();
         layerstacks.clear(); surfaces.clear(); bondwires.clear(); ports.clear(); symbols.clear(); boards.clear();
-        m_archive_padstacks.clear(); m_archive_traces.clear(); m_archive_vias.clear(); m_archive_components.clear();
-        m_archive_nets.clear(); m_archive_layers.clear(); m_archive_layerstacks.clear(); m_archive_surfaces.clear();
-        m_archive_bondwires.clear(); m_archive_ports.clear(); m_archive_symbols.clear(); m_archive_boards.clear();
         m_name_by_object.clear(); m_undo.clear(); m_redo.clear(); m_open_tx = Transaction{}; m_in_tx = false;
         strings.clear(); shapes.clear();
         if (quadtree) quadtree->clear();
@@ -291,42 +315,58 @@ private:
     }
 
     template <EntityKind K>
-    std::vector<EntityT<K>>& archive() {
-        if constexpr (K == EntityKind::PADSTACK) return m_archive_padstacks;
-        else if constexpr (K == EntityKind::TRACE) return m_archive_traces;
-        else if constexpr (K == EntityKind::VIA) return m_archive_vias;
-        else if constexpr (K == EntityKind::COMPONENT) return m_archive_components;
-        else if constexpr (K == EntityKind::NET) return m_archive_nets;
-        else if constexpr (K == EntityKind::LAYER) return m_archive_layers;
-        else if constexpr (K == EntityKind::LAYERSTACK) return m_archive_layerstacks;
-        else if constexpr (K == EntityKind::SURFACE) return m_archive_surfaces;
-        else if constexpr (K == EntityKind::BONDWIRE) return m_archive_bondwires;
-        else if constexpr (K == EntityKind::PORT) return m_archive_ports;
-        else if constexpr (K == EntityKind::SYMBOL) return m_archive_symbols;
-        else return m_archive_boards;
+    std::vector<LayerOp<K>>& tx_ops(Transaction& tx) {
+        if constexpr (K == EntityKind::PADSTACK) return tx.padstack_ops;
+        else if constexpr (K == EntityKind::TRACE) return tx.trace_ops;
+        else if constexpr (K == EntityKind::VIA) return tx.via_ops;
+        else if constexpr (K == EntityKind::COMPONENT) return tx.component_ops;
+        else if constexpr (K == EntityKind::NET) return tx.net_ops;
+        else if constexpr (K == EntityKind::LAYER) return tx.layer_ops;
+        else if constexpr (K == EntityKind::LAYERSTACK) return tx.layerstack_ops;
+        else if constexpr (K == EntityKind::SURFACE) return tx.surface_ops;
+        else if constexpr (K == EntityKind::BONDWIRE) return tx.bondwire_ops;
+        else if constexpr (K == EntityKind::PORT) return tx.port_ops;
+        else if constexpr (K == EntityKind::SYMBOL) return tx.symbol_ops;
+        else return tx.board_ops;
     }
 
     template <EntityKind K>
-    uint32_t archive_add(const EntityT<K>& obj) {
-        auto& a = archive<K>();
-        a.push_back(obj);
-        return static_cast<uint32_t>(a.size() - 1);
+    const std::vector<LayerOp<K>>& tx_ops_const(const Transaction& tx) const {
+        if constexpr (K == EntityKind::PADSTACK) return tx.padstack_ops;
+        else if constexpr (K == EntityKind::TRACE) return tx.trace_ops;
+        else if constexpr (K == EntityKind::VIA) return tx.via_ops;
+        else if constexpr (K == EntityKind::COMPONENT) return tx.component_ops;
+        else if constexpr (K == EntityKind::NET) return tx.net_ops;
+        else if constexpr (K == EntityKind::LAYER) return tx.layer_ops;
+        else if constexpr (K == EntityKind::LAYERSTACK) return tx.layerstack_ops;
+        else if constexpr (K == EntityKind::SURFACE) return tx.surface_ops;
+        else if constexpr (K == EntityKind::BONDWIRE) return tx.bondwire_ops;
+        else if constexpr (K == EntityKind::PORT) return tx.port_ops;
+        else if constexpr (K == EntityKind::SYMBOL) return tx.symbol_ops;
+        else return tx.board_ops;
     }
 
     template <EntityKind K>
-    const EntityT<K>& archive_get(uint32_t idx) const {
-        if constexpr (K == EntityKind::PADSTACK) return m_archive_padstacks[idx];
-        else if constexpr (K == EntityKind::TRACE) return m_archive_traces[idx];
-        else if constexpr (K == EntityKind::VIA) return m_archive_vias[idx];
-        else if constexpr (K == EntityKind::COMPONENT) return m_archive_components[idx];
-        else if constexpr (K == EntityKind::NET) return m_archive_nets[idx];
-        else if constexpr (K == EntityKind::LAYER) return m_archive_layers[idx];
-        else if constexpr (K == EntityKind::LAYERSTACK) return m_archive_layerstacks[idx];
-        else if constexpr (K == EntityKind::SURFACE) return m_archive_surfaces[idx];
-        else if constexpr (K == EntityKind::BONDWIRE) return m_archive_bondwires[idx];
-        else if constexpr (K == EntityKind::PORT) return m_archive_ports[idx];
-        else if constexpr (K == EntityKind::SYMBOL) return m_archive_symbols[idx];
-        else return m_archive_boards[idx];
+    void append_op_to_tx(Transaction& tx, LayerOp<K> op) {
+        auto& vec = tx_ops<K>(tx);
+        vec.push_back(std::move(op));
+        tx.order.push_back({K, static_cast<uint32_t>(vec.size() - 1)});
+    }
+
+    template <EntityKind K>
+    void record_op(const std::string& desc, LayerOp<K> op) {
+        if (m_replaying) return;
+        if (m_in_tx) {
+            append_op_to_tx<K>(m_open_tx, std::move(op));
+            return;
+        }
+
+        Transaction tx{};
+        tx.desc = desc;
+        append_op_to_tx<K>(tx, std::move(op));
+        m_undo.push_back(std::move(tx));
+        if (m_undo.size() > MAX_UNDO) m_undo.erase(m_undo.begin());
+        m_redo.clear();
     }
 
     template <EntityKind K>
@@ -345,74 +385,58 @@ private:
         unindex_name_if_exists(id, obj);
     }
 
-    void record_op(const std::string& desc, const LayerOp& op) {
-        if (m_replaying) return;
-
-        if (m_in_tx) {
-            m_open_tx.ops.push_back(op);
-            return;
-        }
-
-        Transaction tx;
-        tx.desc = desc;
-        tx.ops.push_back(op);
-        m_undo.push_back(std::move(tx));
-        if (m_undo.size() > MAX_UNDO) m_undo.erase(m_undo.begin());
-        m_redo.clear();
-    }
-
-    template <size_t... Is>
-    void apply_forward_dispatch(const LayerOp& op, std::index_sequence<Is...>) {
-        (void)((op.kind == static_cast<EntityKind>(Is) ? (apply_forward_kind<static_cast<EntityKind>(Is)>(op), true) : false) || ...);
-    }
-
-    template <size_t... Is>
-    void apply_inverse_dispatch(const LayerOp& op, std::index_sequence<Is...>) {
-        (void)((op.kind == static_cast<EntityKind>(Is) ? (apply_inverse_kind<static_cast<EntityKind>(Is)>(op), true) : false) || ...);
-    }
-
-    void apply_forward_ordered(const Transaction&, const LayerOp& op) {
-        apply_forward_dispatch(op, std::make_index_sequence<12>{});
-    }
-
-    void apply_inverse_ordered(const Transaction&, const LayerOp& op) {
-        apply_inverse_dispatch(op, std::make_index_sequence<12>{});
-    }
-
     template <EntityKind K>
-    void apply_forward_kind(const LayerOp& op) {
+    void apply_forward_t(const LayerOp<K>& op) {
         auto& c = container<K>();
         if (op.op == OpType::INSERT) {
-            const auto& obj = archive_get<K>(op.after_idx);
-            c.restore(op.handle, obj);
-            on_insert<K>(op.handle, obj);
-        } else if (op.op == OpType::ERASE) {
-            if (const auto* cur = c.get(op.handle)) on_erase<K>(op.handle, *cur);
-            c.remove(op.handle);
+            for (size_t i = 0; i < op.handles.size(); ++i) {
+                c.restore(op.handles[i], op.objects[i]);
+                on_insert<K>(op.handles[i], op.objects[i]);
+            }
         } else {
-            const auto& obj = archive_get<K>(op.after_idx);
-            if (const auto* cur = c.get(op.handle)) on_erase<K>(op.handle, *cur);
-            c.replace(op.handle, obj);
-            on_insert<K>(op.handle, obj);
+            for (size_t i = 0; i < op.handles.size(); ++i) {
+                if (const auto* cur = c.get(op.handles[i])) on_erase<K>(op.handles[i], *cur);
+                c.remove(op.handles[i]);
+            }
         }
     }
 
     template <EntityKind K>
-    void apply_inverse_kind(const LayerOp& op) {
+    void apply_inverse_t(const LayerOp<K>& op) {
         auto& c = container<K>();
         if (op.op == OpType::INSERT) {
-            if (const auto* cur = c.get(op.handle)) on_erase<K>(op.handle, *cur);
-            c.remove(op.handle);
-        } else if (op.op == OpType::ERASE) {
-            const auto& old_obj = archive_get<K>(op.before_idx);
-            c.restore(op.handle, old_obj);
-            on_insert<K>(op.handle, old_obj);
+            for (size_t i = 0; i < op.handles.size(); ++i) {
+                if (const auto* cur = c.get(op.handles[i])) on_erase<K>(op.handles[i], *cur);
+                c.remove(op.handles[i]);
+            }
         } else {
-            const auto& old_obj = archive_get<K>(op.before_idx);
-            if (const auto* cur = c.get(op.handle)) on_erase<K>(op.handle, *cur);
-            c.replace(op.handle, old_obj);
-            on_insert<K>(op.handle, old_obj);
+            for (size_t i = 0; i < op.handles.size(); ++i) {
+                c.restore(op.handles[i], op.objects[i]);
+                on_insert<K>(op.handles[i], op.objects[i]);
+            }
         }
+    }
+
+    template <size_t... Is>
+    void apply_forward_dispatch(const Transaction& tx, const OpOrder& ord, std::index_sequence<Is...>) {
+        (void)((ord.kind == static_cast<EntityKind>(Is)
+            ? (apply_forward_t(tx_ops_const<static_cast<EntityKind>(Is)>(tx)[ord.index]), true)
+            : false) || ...);
+    }
+
+    template <size_t... Is>
+    void apply_inverse_dispatch(const Transaction& tx, const OpOrder& ord, std::index_sequence<Is...>) {
+        (void)((ord.kind == static_cast<EntityKind>(Is)
+            ? (apply_inverse_t(tx_ops_const<static_cast<EntityKind>(Is)>(tx)[ord.index]), true)
+            : false) || ...);
+    }
+
+    void apply_forward_ordered(const Transaction& tx, const OpOrder& ord) {
+        apply_forward_dispatch(tx, ord, std::make_index_sequence<12>{});
+    }
+
+    void apply_inverse_ordered(const Transaction& tx, const OpOrder& ord) {
+        apply_inverse_dispatch(tx, ord, std::make_index_sequence<12>{});
     }
 
     static constexpr std::size_t MAX_UNDO = 256;
@@ -423,23 +447,8 @@ private:
     std::vector<Transaction> m_undo;
     std::vector<Transaction> m_redo;
     std::unordered_map<ObjectId, StringId> m_name_by_object;
-
-    // per-kind archive; op stores only index
-    std::vector<PadstackDef> m_archive_padstacks;
-    std::vector<Trace> m_archive_traces;
-    std::vector<Via> m_archive_vias;
-    std::vector<Component> m_archive_components;
-    std::vector<Net> m_archive_nets;
-    std::vector<Layer> m_archive_layers;
-    std::vector<LayerStack> m_archive_layerstacks;
-    std::vector<Surface> m_archive_surfaces;
-    std::vector<BondWire> m_archive_bondwires;
-    std::vector<Port> m_archive_ports;
-    std::vector<Symbol> m_archive_symbols;
-    std::vector<Board> m_archive_boards;
 };
 
-// Type -> kind mapping (deduced API)
 template <> struct PCBDatabase::KindOf<PadstackDef> { static constexpr EntityKind value = EntityKind::PADSTACK; };
 template <> struct PCBDatabase::KindOf<Trace> { static constexpr EntityKind value = EntityKind::TRACE; };
 template <> struct PCBDatabase::KindOf<Via> { static constexpr EntityKind value = EntityKind::VIA; };
