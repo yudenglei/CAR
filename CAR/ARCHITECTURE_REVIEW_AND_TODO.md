@@ -41,18 +41,29 @@
 
 ```cpp
 // insert 示例
-ObjectId trace_id = db.add_trace(1, trace);
+ObjectId trace_id = db.insert<PCBDatabase::EntityKind::TRACE>(trace);
 
 // replace 示例（不需要单独写事务模板代码）
 Trace t2 = trace;
 t2.name_id = db.strings.intern("CLK_NEW");
-db.replace_trace(trace_id, t2);
+db.replace<PCBDatabase::EntityKind::TRACE>(trace_id, t2);
 
 // erase 示例（同样自动进入 undo/redo 栈）
-db.remove_trace(trace_id);
+db.erase<PCBDatabase::EntityKind::TRACE>(trace_id);
 ```
 
 说明：
-- `PCBDatabase::insert_entity/replace_entity/erase_entity` 是通用模板核心。
-- 业务层只需要传入容器 + 对象 + apply/revert 回调（例如 layer_index 和 name_index 的更新）。
+- `PCBDatabase::insert/replace/erase` 是通用模板核心。
+- 业务层只需要给出 Kind 和对象；容器映射与索引维护由统一模板路径处理。
 - 新增 shape 或器件类型时，无需重复实现一整套 undo/redo 逻辑。
+
+
+## 6) 本轮修正：去函数化事务 + 统一模板接口
+
+- Undo/Redo 由 `std::function` 回调改为紧凑变更日志：`Change{op, kind, handle, before, after}`。
+- 回放时按 `kind + op` 分发到容器 `restore/remove/replace`，避免每条事务携带两个函数对象的额外开销。
+- 业务接口统一为模板：
+  - `db.insert<Kind>(obj)`
+  - `db.replace<Kind>(handle, obj)`
+  - `db.erase<Kind>(handle)`
+- 这样新增器件类型时，只需把类型纳入 `EntityKind` + 容器映射 + 可选索引钩子，不再新增 `add_xxx/remove_xxx/replace_xxx` 重复接口。
