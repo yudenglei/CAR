@@ -63,9 +63,9 @@ db.erase<PCBDatabase::EntityKind::TRACE>(trace_id);
 - Undo/Redo 由 `std::function` 回调改为紧凑变更日志：`Change{op, kind, handle, before, after}`。
 - 回放时按 `kind + op` 分发到容器 `restore/remove/replace`，避免每条事务携带两个函数对象的额外开销。
 - 业务接口统一为模板：
-  - `db.insert<Kind>(obj)`
-  - `db.replace<Kind>(handle, obj)`
-  - `db.erase<Kind>(handle)`
+  - `db.insert(obj)`（自动按类型推导 kind）
+  - `db.replace(handle, obj)`（自动按类型推导 kind）
+  - `db.erase(handle, kind)`（仅 handle 无法推导类型）
 - 这样新增器件类型时，只需把类型纳入 `EntityKind` + 容器映射 + 可选索引钩子，不再新增 `add_xxx/remove_xxx/replace_xxx` 重复接口。
 
 
@@ -92,3 +92,12 @@ db.erase<PCBDatabase::EntityKind::TRACE>(trace_id);
 - 不使用 `variant AnyOp/ObjectData`。
 - `before_idx/after_idx` 仅是归档数组下标（用于 erase/replace 可逆恢复），不是对象快照树。
 - 支持 `begin/commit` 批量记录（一次事务多条 layer_op）。
+
+
+## 9) 归档下标的作用（为什么需要 archive）
+
+- `LayerOp` 只记录轻量字段（op/kind/handle/index），不直接内嵌大对象。
+- `before_idx` / `after_idx` 指向按类型存放的归档数组：
+  - `erase` 回滚时要恢复旧对象，需要 `before_idx`；
+  - `replace` 前进/回滚都需要 old/new，对应 `before_idx/after_idx`。
+- 这比在 op 中直接放对象更轻；同时比全局 snapshot 更细粒度。

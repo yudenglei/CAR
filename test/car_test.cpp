@@ -55,14 +55,14 @@ void test_database_transaction_and_search() {
 
     Layer l{};
     l.name_id = db.strings.intern("Top");
-    db.insert<PCBDatabase::EntityKind::LAYER>(l, "insert_layer");
+    db.insert(l, "insert_layer");
 
     Trace t{};
     t.name_id = db.strings.intern("CLK_MAIN");
     t.layer_id = 1;
     t.segments.push_back(LineSegment(Point(0, 0), Point(100, 0), 10));
 
-    ObjectId id = db.insert<PCBDatabase::EntityKind::TRACE>(t, "insert_trace");
+    ObjectId id = db.insert(t, "insert_trace");
     assert(db.traces.get(id) != nullptr);
 
     auto matches = db.find_by_name_prefix("CLK");
@@ -70,14 +70,14 @@ void test_database_transaction_and_search() {
 
     Trace t2 = t;
     t2.name_id = db.strings.intern("CLK_AUX");
-    assert(db.replace<PCBDatabase::EntityKind::TRACE>(id, t2, "replace_trace"));
+    assert(db.replace(id, t2, "replace_trace"));
     assert(db.can_undo());
 
     assert(db.undo());
     assert(db.traces.get(id) != nullptr);
     assert(db.redo());
 
-    assert(db.erase<PCBDatabase::EntityKind::TRACE>(id, "erase_trace"));
+    assert(db.erase(id, PCBDatabase::EntityKind::TRACE, "erase_trace"));
     assert(db.traces.get(id) == nullptr);
     assert(db.undo());
     assert(db.traces.get(id) != nullptr);
@@ -93,18 +93,18 @@ void test_database_via_generic_ops() {
     v.start_layer = 1;
     v.end_layer = 8;
 
-    ObjectId via_id = db.insert<PCBDatabase::EntityKind::VIA>(v, "insert_via");
+    ObjectId via_id = db.insert(v, "insert_via");
     assert(db.vias.get(via_id) != nullptr);
 
     Via v2 = v;
     v2.name_id = db.strings.intern("VIA_CLK_NEW");
     v2.start_layer = 2;
-    assert(db.replace<PCBDatabase::EntityKind::VIA>(via_id, v2, "replace_via"));
+    assert(db.replace(via_id, v2, "replace_via"));
 
     auto matches = db.find_by_name_prefix("VIA_");
     assert(!matches.empty());
 
-    assert(db.erase<PCBDatabase::EntityKind::VIA>(via_id, "erase_via"));
+    assert(db.erase(via_id, PCBDatabase::EntityKind::VIA, "erase_via"));
     assert(db.vias.get(via_id) == nullptr);
     assert(db.undo());
     assert(db.vias.get(via_id) != nullptr);
@@ -125,8 +125,8 @@ void test_database_batch_transaction() {
     v.end_layer = 2;
 
     db.begin("batch_insert");
-    ObjectId tid = db.insert<PCBDatabase::EntityKind::TRACE>(t);
-    ObjectId vid = db.insert<PCBDatabase::EntityKind::VIA>(v);
+    ObjectId tid = db.insert(t);
+    ObjectId vid = db.insert(v);
     db.commit();
 
     assert(db.traces.get(tid) != nullptr);
