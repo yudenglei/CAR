@@ -67,3 +67,17 @@ db.erase<PCBDatabase::EntityKind::TRACE>(trace_id);
   - `db.replace<Kind>(handle, obj)`
   - `db.erase<Kind>(handle)`
 - 这样新增器件类型时，只需把类型纳入 `EntityKind` + 容器映射 + 可选索引钩子，不再新增 `add_xxx/remove_xxx/replace_xxx` 重复接口。
+
+
+## 7) 方案对比（结合 KLayout db::Shapes layer_op 思路）
+
+- 更接近 KLayout 的是**方案3（操作日志驱动）**：
+  - 记录“哪个容器(kind) + 做了什么(op) + 哪个对象(handle)”，而不是记录函数回调。
+  - Undo/Redo 回放时执行固定的数据路径（restore/remove/replace）。
+- 本轮已移除 `Snapshot variant` 方案，改为：
+  - `LayerOp{op, kind, handle, before_ref, after_ref}`
+  - `before_ref/after_ref` 仅是对象归档引用（archive handle），不是整库快照。
+- 这样做的好处：
+  - 降低事务记录对象的动态分发负担（无 `std::function`）；
+  - 保持可恢复性（erase/replace 仍可找回旧对象）；
+  - API 维持统一模板：`insert<Kind>/replace<Kind>/erase<Kind>`。
